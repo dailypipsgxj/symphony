@@ -1,8 +1,8 @@
 --[[
-
-
-
-
+RAW IB API
+TODO:
+    verify api params
+    notify when disconnect/socket error etc.    
 
 ]]--
 local socket = require "socket"
@@ -11,7 +11,7 @@ local driver = require "socketdriver"
 local assert = assert
 local math = math
 
-local twsclient = {}
+local ibapi = {}
 
 local API_VERSION = "9.71" -- support IB API version
 local CLIENT_VERSION = 63
@@ -167,6 +167,7 @@ local EClientErrors = {
   FAIL_SEND_STARTAPI = { code = 550, msg = "Start API Sending Error - " },
 }
 -- tick name
+-- global table for external use
 TickName = {
   [0]  = "BID_SIZE",
   [1]  = "BID",
@@ -230,12 +231,12 @@ TickName = {
 }
 
 -- decoder helper
-local tws_self = skynet.self()
 
 local function sendMsg(s, t, ...)
-  --print(s.source)
-  skynet.redirect(s.source, tws_self, "lua", 0, skynet.pack("TWS", s.fd, t, ...))
-  --print("sendmsg:", s.fd, t, ...)
+  local message_handler = s.handler.message
+  if message_handler then
+    message_handler(s, t, ...)
+  end
 end
 
 local function readStr(fd)
@@ -283,12 +284,6 @@ local readLong = readInt
 local decoder = {}
 
 -- internal api --
-local function twserror(s, errorId, errorCode, errorMsg)
-  local msg = string.format("%d %d %d %s\n", s.fd, errorId, errorCode, errorMsg)
-  skynet.error(msg)
-  s:eDisconnect()
-end
-
 local function processMsg(s)
   while true do
     local msgId = readInt(s.fd)
@@ -296,7 +291,13 @@ local function processMsg(s)
     if f then
       f(s)
     else
-      twserror(s, EClientErrors.NO_VALID_ID, EClientErrors.UNKNOWN_ID.code, EClientErrors.UNKNOWN_ID.msg)
+      local msg = string.format("%d %s\n", errorCode, errorMsg)
+      skynet.error(msg)
+      s:eDisconnect()
+      local handler = self.handler.disconnect
+      if handler then
+        handler(self)
+      end
     end
   end   -- while
 end
@@ -316,7 +317,7 @@ decoder[TICK_PRICE] = function(s)
     canAutoExecute = readInt(s.fd)
   end
 
-  sendMsg(s, TICK_PRICE, tickerId, TickName[tickType], price, size, canAutoExecute)
+  sendMsg(s, TICK_PRICE, tickerId, tickType, price, size, canAutoExecute)
 end
 
 decoder[TICK_SIZE] = function(s)
@@ -325,7 +326,7 @@ decoder[TICK_SIZE] = function(s)
   local tickType = readInt(s.fd)
   local size = readInt(s.fd)
 
-  sendMsg(s, TICK_SIZE, tickerId, TickName[tickType], size)
+  sendMsg(s, TICK_SIZE, tickerId, tickType, size)
 end
 
 decoder[POSITION] = function(s)
@@ -425,7 +426,7 @@ decoder[TICK_OPTION_COMPUTATION] = function(s)
     end
   end
 
-  sendMsg(s, TICK_OPTION_COMPUTATION, tickerId, TickName[tickType], impliedVol, delta, optPrice, pvDividend, gamma, vega, theta, undPrice)  
+  sendMsg(s, TICK_OPTION_COMPUTATION, tickerId, tickType, impliedVol, delta, optPrice, pvDividend, gamma, vega, theta, undPrice)  
 end
 
 decoder[TICK_GENERIC] = function(s)
@@ -433,7 +434,7 @@ decoder[TICK_GENERIC] = function(s)
   local tickerId = readInt(s.fd)
   local tickType = readInt(s.fd)
   local value = readDouble(s.fd)
-  sendMsg(s, TICK_GENERIC, tickerId, TickName[tickType], value)  
+  sendMsg(s, TICK_GENERIC, tickerId, tickType, value)  
 end
 
 decoder[TICK_STRING] = function(s)
@@ -441,7 +442,7 @@ decoder[TICK_STRING] = function(s)
   local tickerId = readInt(s.fd)
   local tickType = readInt(s.fd)
   local value = readStr(s.fd)
-  sendMsg(s, TICK_STRING, tickerId, TickName[tickType], value)  
+  sendMsg(s, TICK_STRING, tickerId, tickType, value)  
 end
 
 decoder[TICK_EFP] = function(s)
@@ -456,7 +457,7 @@ decoder[TICK_EFP] = function(s)
   local dividendImpact = readDouble(s.fd)
   local dividendsToExpiry = readDouble(s.fd)
 
-  sendMsg(s, TICK_EFP, tickerId, TickName[tickType], basisPoints, formattedBasisPoints,
+  sendMsg(s, TICK_EFP, tickerId, tickType, basisPoints, formattedBasisPoints,
     impliedFuturesPrice, holdDays, futureExpiry, dividendImpact, dividendsToExpiry)  
 end
 
@@ -1455,7 +1456,7 @@ local function startAPI(conn)
   sendInt(conn,conn.clientId)
 end
 
-function twsclient:reqMktData(tickerId, contract, genericTickList, snapshot, mktDataOptions)
+function ibapi:reqMktData(tickerId, contract, genericTickList, snapshot, mktDataOptions)
   local VERSION = 11
   --  send req mkt data msg
   sendInt(self,REQ_MKT_DATA)
@@ -1496,21 +1497,21 @@ function twsclient:reqMktData(tickerId, contract, genericTickList, snapshot, mkt
   sendStr(self,formatOptions(mktDataOptions))
 end
 
-function twsclient:cancelScannerSubscription(tickerId)
+function ibapi:cancelScannerSubscription(tickerId)
   local VERSION = 1
   sendInt(self, CANCEL_SCANNER_SUBSCRIPTION)
   sendInt(self, VERSION)
   sendInt(self, tickerId)
 end
 
-function twsclient:reqScannerParameters()
+function ibapi:reqScannerParameters()
   local VERSION = 1
   sendInt(self, REQ_SCANNER_PARAMETERS)
   sendInt(self, VERSION)
 end
 
 
-function twsclient:cancelHistoricalData(tickerId )
+function ibapi:cancelHistoricalData(tickerId )
   local VERSION = 1
   --  send cancel mkt data msg
   sendInt(self, CANCEL_HISTORICAL_DATA)
@@ -1518,7 +1519,7 @@ function twsclient:cancelHistoricalData(tickerId )
   sendInt(self, tickerId)    
 end
 
-function twsclient:reqScannerSubscription(tickerId, subscription, scannerSubscriptionOptions)
+function ibapi:reqScannerSubscription(tickerId, subscription, scannerSubscriptionOptions)
   local VERSION = 4
 
   sendInt(self, REQ_SCANNER_SUBSCRIPTION)
@@ -1551,7 +1552,7 @@ function twsclient:reqScannerSubscription(tickerId, subscription, scannerSubscri
   sendStr(self, formatOptions(scannerSubscriptionOptions))
 end
 
-function twsclient:cancelRealTimeBars(tickerId)
+function ibapi:cancelRealTimeBars(tickerId)
   local VERSION = 1
   --  send cancel mkt data msg
   sendInt(self, CANCEL_REAL_TIME_BARS)
@@ -1560,7 +1561,7 @@ function twsclient:cancelRealTimeBars(tickerId)
 end
 
 -- Note that formatData parameter affects intra-day bars only 1-day bars always return with date in YYYYMMDD format.
-function twsclient:reqHistoricalData(tickerId, contract, endDateTime, durationStr, barSizeSetting, whatToShow,
+function ibapi:reqHistoricalData(tickerId, contract, endDateTime, durationStr, barSizeSetting, whatToShow,
     useRTH, formatDate, chartOptions)
   local VERSION = 6
 
@@ -1598,7 +1599,7 @@ function twsclient:reqHistoricalData(tickerId, contract, endDateTime, durationSt
   sendStr(self, formatOptions(chartOptions))
 end
 
-function twsclient:reqRealTimeBars(tickerId, contract, barSize, whatToShow, useRTH, realTimeBarsOptions)
+function ibapi:reqRealTimeBars(tickerId, contract, barSize, whatToShow, useRTH, realTimeBarsOptions)
   local VERSION = 3
 
   --  send req mkt data msg
@@ -1616,7 +1617,7 @@ function twsclient:reqRealTimeBars(tickerId, contract, barSize, whatToShow, useR
   sendStr(self, formatOptions(realTimeBarsOptions))
 end
 
-function twsclient:reqContractDetails(reqId, contract)
+function ibapi:reqContractDetails(reqId, contract)
   local VERSION = 7
 
   --  send req mkt data msg
@@ -1633,7 +1634,7 @@ function twsclient:reqContractDetails(reqId, contract)
   sendStr(self, contract.secId)
 end
 
-function twsclient:reqMktDepth(tickerId, contract, numRows, mktDepthOptions)
+function ibapi:reqMktDepth(tickerId, contract, numRows, mktDepthOptions)
   local VERSION = 5
 
   --  send req mkt data msg
@@ -1649,7 +1650,7 @@ function twsclient:reqMktDepth(tickerId, contract, numRows, mktDepthOptions)
   sendStr(self, formatOptions(mktDepthOptions))
 end
 
-function twsclient:cancelMktData(tickerId) 
+function ibapi:cancelMktData(tickerId) 
   local VERSION = 1
   --  send cancel mkt data msg
   sendInt(self, CANCEL_MKT_DATA)
@@ -1657,7 +1658,7 @@ function twsclient:cancelMktData(tickerId)
   sendInt(self, tickerId)
 end
 
-function twsclient:cancelMktDepth(tickerId)
+function ibapi:cancelMktDepth(tickerId)
   local VERSION = 1
   --  send cancel mkt data msg
   sendInt(self, CANCEL_MKT_DEPTH)
@@ -1665,7 +1666,7 @@ function twsclient:cancelMktDepth(tickerId)
   sendInt(self, tickerId)
 end
 
-function twsclient:exerciseOptions(tickerId, contract, exerciseAction, exerciseQuantity, account, override)
+function ibapi:exerciseOptions(tickerId, contract, exerciseAction, exerciseQuantity, account, override)
   local VERSION = 2
 
   sendInt(self,EXERCISE_OPTIONS)
@@ -1681,7 +1682,7 @@ function twsclient:exerciseOptions(tickerId, contract, exerciseAction, exerciseQ
   sendInt(self,override)
 end
 
-function twsclient:placeOrder(orderId, contract, order)
+function ibapi:placeOrder(orderId, contract, order)
 
   local VERSION =  42
 
@@ -1897,7 +1898,7 @@ function twsclient:placeOrder(orderId, contract, order)
   sendStr(self,formatOptions(orderMiscOptions))
 end
 
-function twsclient:reqAccountUpdates(subscribe, acctCode)
+function ibapi:reqAccountUpdates(subscribe, acctCode)
   local VERSION = 2
   --  send cancel order msg
   sendInt(self, REQ_ACCOUNT_DATA )
@@ -1907,7 +1908,7 @@ function twsclient:reqAccountUpdates(subscribe, acctCode)
   sendStr(self, acctCode)
 end
 
-function twsclient:reqExecutions(reqId, filter)
+function ibapi:reqExecutions(reqId, filter)
   local VERSION = 3
   sendInt(self, REQ_EXECUTIONS)
   sendInt(self, VERSION)
@@ -1925,73 +1926,73 @@ function twsclient:reqExecutions(reqId, filter)
   sendStr(self, filter.side)
 end
 
-function twsclient:cancelOrder(id)
+function ibapi:cancelOrder(id)
   local VERSION = 1
   sendInt(self, CANCEL_ORDER)
   sendInt(self, VERSION)
   sendInt(self, id)
 end
 
-function twsclient:reqOpenOrders()
+function ibapi:reqOpenOrders()
   local VERSION = 1
   sendInt(self, REQ_OPEN_ORDERS)
   sendInt(self, VERSION)
 end
 
-function twsclient:reqIds(numIds)
+function ibapi:reqIds(numIds)
   local VERSION = 1
   sendInt(self, REQ_IDS)
   sendInt(self, VERSION)
   sendInt(self, numIds)
 end
 
-function twsclient:reqNewsBulletins(allMsgs)
+function ibapi:reqNewsBulletins(allMsgs)
   local VERSION = 1
   sendInt(self, REQ_NEWS_BULLETINS)
   sendInt(self, VERSION)
   sendBool(self, allMsgs)
 end
 
-function twsclient:cancelNewsBulletins()
+function ibapi:cancelNewsBulletins()
   local VERSION = 1
   sendInt(self, CANCEL_NEWS_BULLETINS)
   sendInt(self, VERSION)
 end
 
-function twsclient:setServerLogLevel(logLevel)
+function ibapi:setServerLogLevel(logLevel)
   local VERSION = 1
   sendInt(self, SET_SERVER_LOGLEVEL)
   sendInt(self, VERSION)
   sendInt(self, logLevel)
 end
 
-function twsclient:reqAutoOpenOrders(bAutoBind)
+function ibapi:reqAutoOpenOrders(bAutoBind)
   local VERSION = 1
   sendInt(self, REQ_AUTO_OPEN_ORDERS)
   sendInt(self, VERSION)
   sendBool(self, bAutoBind)
 end
 
-function twsclient:reqAllOpenOrders()
+function ibapi:reqAllOpenOrders()
   local VERSION = 1
   sendInt(self, REQ_ALL_OPEN_ORDERS)
   sendInt(self, VERSION)
 end
 
-function twsclient:reqManagedAccts()
+function ibapi:reqManagedAccts()
   local VERSION = 1
   sendInt(self, REQ_MANAGED_ACCTS)
   sendInt(self, VERSION)
 end
 
-function twsclient:requestFA(faDataType )
+function ibapi:requestFA(faDataType )
   local VERSION = 1
   sendInt(self, REQ_FA )
   sendInt(self, VERSION)
   sendInt(self, faDataType)
 end
 
-function twsclient:replaceFA(faDataType, xml)
+function ibapi:replaceFA(faDataType, xml)
   local VERSION = 1
   sendInt(self, REPLACE_FA )
   sendInt(self, VERSION)
@@ -1999,13 +2000,13 @@ function twsclient:replaceFA(faDataType, xml)
   sendStr(self, xml)
 end
 
-function twsclient:reqCurrentTime()
+function ibapi:reqCurrentTime()
   local VERSION = 1
   sendInt(self, REQ_CURRENT_TIME )
   sendInt(self, VERSION)
 end
 
-function twsclient:reqFundamentalData(reqId, contract, reportType)
+function ibapi:reqFundamentalData(reqId, contract, reportType)
   local VERSION = 2
   sendInt(self, REQ_FUNDAMENTAL_DATA)
   sendInt(self, VERSION)
@@ -2021,14 +2022,14 @@ function twsclient:reqFundamentalData(reqId, contract, reportType)
   sendStr(self, reportType)
 end
 
-function twsclient:cancelFundamentalData(reqId)
+function ibapi:cancelFundamentalData(reqId)
   local VERSION = 1
   sendInt(self, CANCEL_FUNDAMENTAL_DATA)
   sendInt(self, VERSION)
   sendInt(self, reqId)
 end
 
-function twsclient:calculateImpliedVolatility(reqId, contract, optionPrice, underPrice)
+function ibapi:calculateImpliedVolatility(reqId, contract, optionPrice, underPrice)
   local VERSION = 2
   sendInt(self, REQ_CALC_IMPLIED_VOLAT)
   sendInt(self, VERSION)
@@ -2039,14 +2040,14 @@ function twsclient:calculateImpliedVolatility(reqId, contract, optionPrice, unde
   sendDouble(self, underPrice)
 end
 
-function twsclient:cancelCalculateImpliedVolatility(reqId)
+function ibapi:cancelCalculateImpliedVolatility(reqId)
   local VERSION = 1
   sendInt(self, CANCEL_CALC_IMPLIED_VOLAT)
   sendInt(self, VERSION)
   sendInt(self, reqId)
 end
 
-function twsclient:calculateOptionPrice(reqId, contract, volatility, underPrice)
+function ibapi:calculateOptionPrice(reqId, contract, volatility, underPrice)
   local VERSION = 2
   sendInt(self, REQ_CALC_OPTION_PRICE)
   sendInt(self, VERSION)
@@ -2057,39 +2058,39 @@ function twsclient:calculateOptionPrice(reqId, contract, volatility, underPrice)
   sendDouble(self, underPrice)
 end
 
-function twsclient:cancelCalculateOptionPrice(reqId)
+function ibapi:cancelCalculateOptionPrice(reqId)
   local VERSION = 1
   sendInt(self, CANCEL_CALC_OPTION_PRICE)
   sendInt(self, VERSION)
   sendInt(self, reqId)
 end
 
-function twsclient:reqGlobalCancel()
+function ibapi:reqGlobalCancel()
   local VERSION = 1
   sendInt(self, REQ_GLOBAL_CANCEL)
   sendInt(self, VERSION)
 end
 
-function twsclient:reqMarketDataType(marketDataType)
+function ibapi:reqMarketDataType(marketDataType)
   local VERSION = 1
   sendInt(self, REQ_MARKET_DATA_TYPE)
   sendInt(self, VERSION)
   sendInt(self, marketDataType)    
 end
 
-function twsclient:reqPositions()
+function ibapi:reqPositions()
   local VERSION = 1
   sendInt(self, REQ_POSITIONS)
   sendInt(self, VERSION)
 end
 
-function twsclient:cancelPositions()
+function ibapi:cancelPositions()
   local VERSION = 1
   sendInt(self, CANCEL_POSITIONS)
   sendInt(self, VERSION)
 end
 
-function twsclient:reqAccountSummary(reqId,  group,  tags)
+function ibapi:reqAccountSummary(reqId,  group,  tags)
   local VERSION = 1
   sendInt(self, REQ_ACCOUNT_SUMMARY)
   sendInt(self, VERSION)
@@ -2098,14 +2099,14 @@ function twsclient:reqAccountSummary(reqId,  group,  tags)
   sendStr(self, tags)
 end
 
-function twsclient:cancelAccountSummary(reqId)
+function ibapi:cancelAccountSummary(reqId)
   local VERSION = 1
   sendInt(self, CANCEL_ACCOUNT_SUMMARY)
   sendInt(self, VERSION)
   sendInt(self, reqId)
 end
 
-function twsclient:verifyRequest(apiName, apiVersion)
+function ibapi:verifyRequest(apiName, apiVersion)
   local VERSION = 1
   sendInt(self, VERIFY_REQUEST)
   sendInt(self, VERSION)
@@ -2113,21 +2114,21 @@ function twsclient:verifyRequest(apiName, apiVersion)
   sendStr(self, apiVersion)
 end
 
-function twsclient:verifyMessage(apiData)
+function ibapi:verifyMessage(apiData)
   local VERSION = 1
   sendInt(self, VERIFY_MESSAGE)
   sendInt(self, VERSION)
   sendInt(self, apiData)
 end
 
-function twsclient:queryDisplayGroups(reqId)
+function ibapi:queryDisplayGroups(reqId)
   local VERSION = 1
   sendInt(self, QUERY_DISPLAY_GROUPS)
   sendInt(self, VERSION)
   sendInt(self, reqId)
 end
 
-function twsclient:subscribeToGroupEvents(reqId,  groupId)
+function ibapi:subscribeToGroupEvents(reqId,  groupId)
   local VERSION = 1
   sendInt(self, SUBSCRIBE_TO_GROUP_EVENTS)
   sendInt(self, VERSION)
@@ -2135,7 +2136,7 @@ function twsclient:subscribeToGroupEvents(reqId,  groupId)
   sendInt(self, groupId)
 end   
 
-function twsclient:updateDisplayGroup(reqId, contractInfo)
+function ibapi:updateDisplayGroup(reqId, contractInfo)
   local VERSION = 1
   sendInt(self, UPDATE_DISPLAY_GROUP)
   sendInt(self, VERSION)
@@ -2143,7 +2144,7 @@ function twsclient:updateDisplayGroup(reqId, contractInfo)
   sendStr(self, contractInfo)
 end   
 
-function twsclient:unsubscribeFromGroupEvents(reqId)
+function ibapi:unsubscribeFromGroupEvents(reqId)
   local VERSION = 1
   sendInt(self, UNSUBSCRIBE_FROM_GROUP_EVENTS)
   sendInt(self, VERSION)
@@ -2151,7 +2152,7 @@ function twsclient:unsubscribeFromGroupEvents(reqId)
 end 
 
 
-function twsclient:eConnect()
+function ibapi:eConnect()
   self.fd = socket.open(self.host, self.port)
   if self.fd then
     driver.nodelay(self.fd, true)
@@ -2165,8 +2166,7 @@ function twsclient:eConnect()
     end
 
     if self.serverVersion < MIN_SERVER_VERSION then
-      twserror(self, EClientErrors.NO_VALID_ID, EClientErrors.UPDATE_TWS.code, EClientErrors.UPDATE_TWS.msg)
-      return false
+      return false, EClientErrors.UPDATE_TWS
     end
 
     startAPI(self)
@@ -2182,19 +2182,19 @@ function twsclient:eConnect()
   end
 end
 
-function twsclient:eDisconnect()
+function ibapi:eDisconnect()
   driver.close(self.fd)
   self.connected = false
 end
 
-function twsclient:new(conf)
+function ibapi:new(conf, handler)
   local host = conf.host or "127.0.0.1"
   local port = conf.port or 7496
   local clientId = conf.clientId or 1
 
-  local conn = { fd = 0, clientId = clientId, host = host, port = port, connected = false }
+  local conn = { fd = 0, clientId = clientId, host = host, port = port, connected = false, handler = handler }
   setmetatable(conn, {__index = self})
   return conn
 end
 
-return twsclient
+return ibapi
