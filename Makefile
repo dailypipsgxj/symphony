@@ -146,7 +146,7 @@ $(LUA_CLIB_PATH)/debugchannel.so : $(SKYNET_SRC_PATH)/lualib-src/lua-debugchanne
 clean :
 	rm -f $(SKYNET_BUILD_PATH)/skynet $(CSERVICE_PATH)/*.so $(LUA_CLIB_PATH)/*.so 
 	@rm -fr $(SKYNET_BUILD_PATH)/skynet.dSYM $(CSERVICE_PATH)/*.dSYM $(LUA_CLIB_PATH)/*.dSYM
-
+	@rm -r $(CSERVICE_PATH) $(LUA_CLIB_PATH)
 cleanall: clean
 ifneq (,$(wildcard $(SKYNET_SRC_PATH)/3rd/jemalloc/Makefile))
 	cd $(SKYNET_SRC_PATH)/3rd/jemalloc && $(MAKE) clean
